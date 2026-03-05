@@ -65,8 +65,14 @@ async fn main() {
     let sty = ProgressStyle::with_template("{msg} [{bar:40}] {pos}/{len} rows ({eta})")
         .unwrap()
         .progress_chars("=> ");
+    let concurrency = std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(1);
     let mut set = JoinSet::new();
     for meta in metas {
+        if set.len() >= concurrency {
+            set.join_next().await.unwrap().unwrap();
+        }
         let azure = azure.clone();
         let hasher = hasher.clone();
         let outdir = args.outdir.clone();
