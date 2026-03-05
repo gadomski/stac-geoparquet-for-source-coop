@@ -1,4 +1,4 @@
-use chrono::{TimeZone, Utc};
+use chrono::{DateTime, Duration, TimeZone, Utc};
 use clap::Parser;
 use futures::StreamExt;
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
@@ -31,20 +31,12 @@ struct Args {
 #[tokio::main]
 async fn main() {
     let args = Args::parse();
-    let sas_token = get_sas_token().await;
-    let azure: Arc<dyn ObjectStore> = Arc::new(
-        MicrosoftAzureBuilder::new()
-            .with_account(ACCOUNT)
-            .with_container_name(CONTAINER_NAME)
-            .with_config(AzureConfigKey::SasKey, sas_token.token)
-            .build()
-            .unwrap(),
-    );
+    let mut azure_store = AzureStore::new().await;
     println!(
         "Searching {} for parquet files in {}",
         args.prefix, args.year
     );
-    let mut list_stream = azure.list(Some(&args.prefix.into()));
+    let mut list_stream = azure_store.store.list(Some(&args.prefix.into()));
     let mut metas = Vec::new();
     while let Some(meta) = list_stream.next().await.map(|result| result.unwrap()) {
         if contains_year(&meta.location, &args.year) {
@@ -73,7 +65,8 @@ async fn main() {
         if set.len() >= concurrency {
             set.join_next().await.unwrap().unwrap();
         }
-        let azure = azure.clone();
+        azure_store.maybe_refresh().await;
+        let azure = azure_store.store.clone();
         let hasher = hasher.clone();
         let outdir = args.outdir.clone();
         let pb = m.add(ProgressBar::new(0));
@@ -129,19 +122,46 @@ fn contains_year(path: &Path, year: &str) -> bool {
         .any(|y| y == year)
 }
 
-async fn get_sas_token() -> SASToken {
-    let body = reqwest::get(format!(
-        "https://planetarycomputer.microsoft.com/api/sas/v1/token/{}/{}",
-        ACCOUNT, CONTAINER_NAME
-    ))
-    .await
-    .unwrap();
-    body.json().await.unwrap()
+struct AzureStore {
+    store: Arc<dyn ObjectStore>,
+    expiry: DateTime<Utc>,
+}
+
+impl AzureStore {
+    async fn new() -> Self {
+        let sas_token = Self::get_sas_token().await;
+        let expiry = sas_token.expiry.parse::<DateTime<Utc>>().unwrap();
+        let store = Arc::new(
+            MicrosoftAzureBuilder::new()
+                .with_account(ACCOUNT)
+                .with_container_name(CONTAINER_NAME)
+                .with_config(AzureConfigKey::SasKey, sas_token.token)
+                .build()
+                .unwrap(),
+        );
+        AzureStore { store, expiry }
+    }
+
+    async fn maybe_refresh(&mut self) {
+        if Utc::now() + Duration::minutes(60) >= self.expiry {
+            println!("Refreshing SAS token");
+            *self = Self::new().await;
+        }
+    }
+
+    async fn get_sas_token() -> SASToken {
+        let body = reqwest::get(format!(
+            "https://planetarycomputer.microsoft.com/api/sas/v1/token/{}/{}",
+            ACCOUNT, CONTAINER_NAME
+        ))
+        .await
+        .unwrap();
+        body.json().await.unwrap()
+    }
 }
 
 #[derive(Debug, Deserialize)]
 struct SASToken {
-    #[allow(unused)]
     #[serde(rename = "msft:expiry")]
     expiry: String,
     token: String,
