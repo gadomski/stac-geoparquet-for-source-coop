@@ -144,7 +144,6 @@ impl AzureStore {
 
     async fn maybe_refresh(&mut self) {
         if Utc::now() + Duration::minutes(60) >= self.expiry {
-            println!("Refreshing SAS token");
             *self = Self::new().await;
         }
     }
