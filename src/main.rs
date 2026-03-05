@@ -79,15 +79,17 @@ async fn main() {
                 .filename()
                 .expect("meta location should have a filename");
             let outpath = path::Path::new(&outdir).join(filename);
+            let outfile = File::create(&outpath).unwrap();
+            let mut writer: Option<Writer<_>> = None;
             let reader =
                 ParquetObjectReader::new(azure, meta.location.clone()).with_file_size(meta.size);
             let builder = ParquetRecordBatchStreamBuilder::new(reader).await.unwrap();
             let total_rows = builder.metadata().file_metadata().num_rows() as u64;
             pb.set_length(total_rows);
-            let mut items: Vec<Item> = Vec::new();
             let mut stream = builder.build().unwrap();
             while let Some(record_batch) = stream.next().await.map(|result| result.unwrap()) {
                 pb.inc(record_batch.num_rows() as u64);
+                let mut items: Vec<Item> = Vec::new();
                 for mut item in stac::geoarrow::json::record_batch_to_json_rows(record_batch)
                     .unwrap()
                     .into_iter()
@@ -97,19 +99,13 @@ async fn main() {
                     item.id = format!("{hash:016x}-{}", item.id);
                     items.push(item);
                 }
-            }
-            pb.finish();
-            items.sort_by(|a, b| a.id.cmp(&b.id));
-            let outfile = File::create(&outpath).unwrap();
-            let mut writer: Option<Writer<_>> = None;
-            for chunk in items.chunks(10000) {
-                let items = chunk.to_vec();
                 if let Some(writer) = writer.as_mut() {
                     writer.write(items).unwrap();
                 } else {
                     writer = Some(WriterBuilder::new(&outfile).build(items).unwrap());
                 }
             }
+            pb.finish();
             writer.unwrap().finish().unwrap();
         });
     }
