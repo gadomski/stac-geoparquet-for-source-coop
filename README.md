@@ -9,6 +9,8 @@ Small Rust executable that:
 After writing, we then combine all the **stac-geoparquet** files into a single file, sorted by id (and therefore by space and time):
 
 ```sql
+install spatial;
+load spatial;
 copy (select * from read_parquet('*.parquet') order by id) to 'outfile.parquet' (format parquet, compression zstd);
 ```
 
